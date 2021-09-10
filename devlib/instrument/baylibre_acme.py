@@ -5,6 +5,8 @@ import functools
 import re
 import threading
 
+import xmlrpc.client
+
 from past.builtins import basestring
 
 try:
@@ -368,6 +370,10 @@ class BaylibreAcmeInstrument(Instrument):
             min_str = '.'.join(map(str, self.MINIMAL_ACME_IIO_DRIVERS_VERSION))
             raise TargetError(msg.format('the BBB', ver_str, min_str))
 
+    #def setgpio(self):
+    #    print("setgpio implemented for ssh connection only")
+    #def unsetgpio(self):
+    #    print("unsetgpio implemented for ssh connection only")
     # properties
 
     def probes_unique_property(self, property_name):
@@ -509,6 +515,7 @@ class BaylibreAcmeXMLInstrument(BaylibreAcmeInstrument):
 
 class BaylibreAcmeNetworkInstrument(BaylibreAcmeInstrument):
 
+    #import xmlrpc.client
     def __init__(self, target=None, hostname=None, probe_names=None):
 
         if iio_import_failed:
@@ -520,22 +527,29 @@ class BaylibreAcmeNetworkInstrument(BaylibreAcmeInstrument):
                         probe_names=probe_names
         )
 
+        self.hostname = hostname
+
         try:
-            self.ssh_connection = SshConnection(hostname, username='root', password=None)
+            self.ssh_connection = SshConnection(hostname, username='root', password='')
+            print("SSH CONNECT succeed! ")
         except TargetError as e:
             msg = 'No SSH connexion could be established to {}: {}'
+            print('WTF')
             self.logger.debug(msg.format(hostname, e))
             self.ssh_connection = None
 
     def check_version(self):
         super(BaylibreAcmeNetworkInstrument, self).check_version()
+        print("net instrument check version")
 
         cmd = r"""sed -nr 's/^VERSION_ID="(.+)"$/\1/p' < /etc/os-release"""
         try:
             ver_str = self._ssh(cmd).rstrip()
             ver = tuple(map(int, ver_str.split('.')))
+            print("acme version= " + ver)
         except Exception as e:
             self.logger.debug('Unable to verify ACME SD image version through SSH: {}'.format(e))
+            print('Unable to verify ACME SD image version through SSH: {}'.format(e))
         else:
             if ver < self.MINIMAL_ACME_SD_IMAGE_VERSION:
                 min_str = '.'.join(map(str, self.MINIMAL_ACME_SD_IMAGE_VERSION))
@@ -543,8 +557,112 @@ class BaylibreAcmeNetworkInstrument(BaylibreAcmeInstrument):
                        'devlib requires {} or later.')
                 raise TargetError(msg.format(ver_str, min_str))
 
+    def probe_sw_off(self, probenb):
+        ACME_RPC_PORT = 8000
+        ACME_RPC_HOSTNAME = self.hostname
+
+        serveraddr = "%s:%d" % (ACME_RPC_HOSTNAME, ACME_RPC_PORT)
+        s = xmlrpc.client.ServerProxy("http://%s/acme" % serveraddr)
+        res = s.switch_off(probenb)
+        if (res == 'Success'):
+            print('probe' + probenb + ' switched OFF successfully!')
+            return True
+        else:
+            print('FAIL to switch OFF probe' + probenb + '!')
+            msg = ('FAIL to switch OFF probe {}!')
+            raise TargetError(msg.format(probenb))
+            return False
+
+    def probe_sw_on(self, probenb):
+        ACME_RPC_PORT = 8000
+        ACME_RPC_HOSTNAME = self.hostname
+
+        serveraddr = "%s:%d" % (ACME_RPC_HOSTNAME, ACME_RPC_PORT)
+        s = xmlrpc.client.ServerProxy("http://%s/acme" % serveraddr)
+        res = s.switch_on(probenb)
+        if (res == 'Success'):
+            print('probe' + probenb + ' switched ON successfully!')
+            return True
+        else:
+            print('FAIL to switch ON probe' + probenb + '!')
+            msg = ('FAIL to switch OFF probe {}!')
+            raise TargetError(msg.format(probenb))
+            return False
+
+    def setgpio(self, index = 66):
+        #super(BaylibreAcmeNetworkInstrument, self).setgpio()
+        print("net instrument setgpio")
+        cmd = "echo " + str(index) + " > /sys/class/gpio/export"
+        try:
+            self._ssh(cmd)
+            #self._ssh(cmd, timeout=5, as_root=True)
+        except Exception as e:
+            self.logger.debug('Unable to set gpio through SSH: {}'.format(e))
+
+    def unsetgpio(self, index = 66):
+        #super(BaylibreAcmeNetworkInstrument, self).unsetgpio()
+        print("net instrument setgpio")
+        cmd = "echo " + str(index) + " > /sys/class/gpio/unexport"
+        try:
+            self._ssh(cmd)
+        except Exception as e:
+            print("error raised during unsetgpio")
+            self.logger.debug('Unable to unexport gpio through SSH: {}'.format(e))
+
+    def gpio_available(self, index = 66):
+        print("net instrument checkgpio")
+        cmd = "cat /sys/class/gpio/gpio" + str(index) + "/value"
+        try:
+            cons_ret = self._ssh(cmd).rstrip()
+            #print(cons_ret)
+            if "No such file or directory" in cons_ret:
+                print("gpio not exported")
+                return False
+            else:
+                print("gpio "+ str(index) +" available")
+                return True
+        except Exception as e:
+            print("error raised during gpio_available"+ str(index))
+            self.logger.debug('Unable to set gpio throgh SSH: {}'.format(e))
+
+    def gpio_drive_high(self, index = 66):
+        print("set gpio drive High")
+        if not self.gpio_available(index):
+            self.setgpio(index)
+        cmd1 = "echo out > /sys/class/gpio/gpio"+ str(index) + "/direction"
+        cmd2 = "echo 1 > /sys/class/gpio/gpio"+ str(index) + "/value"
+        try:
+            self._ssh(cmd1)
+            self._ssh(cmd2)
+        except Exception as e:
+            self.logger.debug('Unable to set gpio drive High through SSH: {}'.format(e))
+
+    def gpio_drive_low(self, index = 66):
+        print("set gpio drive Low")
+        if not self.gpio_available(index):
+            self.setgpio(index)
+        cmd1 = "echo out > /sys/class/gpio/gpio"+ str(index) + "/direction"
+        cmd2 = "echo 0 > /sys/class/gpio/gpio"+ str(index) + "/value"
+        try:
+            self._ssh(cmd1)
+            self._ssh(cmd2)
+        except Exception as e:
+            self.logger.debug('Unable to set gpio drive Low through SSH: {}'.format(e))
+
+    def gpio_in(self, index = 66):
+        print("set gpio input mode")
+        if not self.gpio_available(index):
+            self.setgpio(index)
+        cmd = "echo in > /sys/class/gpio/gpio"+ str(index) + "/direction"
+        try:
+            self._ssh(cmd)
+        except Exception as e:
+            self.logger.debug('Unable to set gpio input through SSH: {}'.format(e))
+        
+        
     def _ssh(self, cmd=''):
         """Connections are assumed to be rare."""
+        print("run cmd: " + cmd + " through ssh")
         if self.ssh_connection is None:
             raise TargetError('No SSH connection; see log.')
         return self.ssh_connection.execute(cmd)
